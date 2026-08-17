@@ -26,18 +26,38 @@
             </header>
 
             <section class="controls" aria-label="视频来源">
-                <div class="field">
+                <div class="source-mode" role="group" aria-label="选择视频来源">
+                    <button
+                        id="sourceModeFile"
+                        class="source-mode__button is-active"
+                        type="button"
+                        aria-pressed="true"
+                        data-source-mode="file"
+                    >
+                        本地文件
+                    </button>
+                    <button
+                        id="sourceModeUrl"
+                        class="source-mode__button"
+                        type="button"
+                        aria-pressed="false"
+                        data-source-mode="url"
+                    >
+                        远程 URL
+                    </button>
+                </div>
+                <div id="fileField" class="field" data-source-panel="file">
                     <label for="fileInput">上传 MP4 文件</label>
                     <input id="fileInput" type="file" accept="video/mp4,.mp4" />
                 </div>
-                <div class="field">
-                    <label for="urlInput">或粘贴 MP4 URL</label>
+                <div id="urlField" class="field" data-source-panel="url" hidden>
+                    <label for="urlInput">粘贴 MP4 URL</label>
                     <input id="urlInput" type="url" placeholder="https://example.com/video.mp4" />
                 </div>
                 <button id="startButton" type="button">解析全部帧</button>
                 <button id="cancelButton" class="secondary" type="button" disabled>停止</button>
                 <p class="hint">
-                    选择本地视频或粘贴https/http协议的视频地址，仅支持 WebCodecs 的 Chromium 浏览器，以及可被 CORS 读取的 MP4 URL。长视频的全部帧会占用大量内存。
+                    先选择本地文件或远程 URL，再开始解析。仅支持 WebCodecs 的 Chromium 浏览器；远程地址需可被 CORS 读取。长视频的全部帧会占用大量内存。
                 </p>
             </section>
 
@@ -108,6 +128,9 @@
 
             const fileInput = document.querySelector("#fileInput");
             const urlInput = document.querySelector("#urlInput");
+            const fileField = document.querySelector("#fileField");
+            const urlField = document.querySelector("#urlField");
+            const sourceModeButtons = document.querySelectorAll("[data-source-mode]");
             const startButton = document.querySelector("#startButton");
             const cancelButton = document.querySelector("#cancelButton");
             const preview = document.querySelector("#preview");
@@ -119,6 +142,8 @@
             const runtimeBadge = document.querySelector("#runtimeBadge");
             const basicVideoInfo = document.querySelector("#basicVideoInfo");
 
+            /** 当前展示并用于解析的来源：file | url */
+            let activeSourceMode = "file";
             let activeWorker = null;
             let previewObjectUrl = null;
             let frameObjectUrls = [];
@@ -299,10 +324,25 @@
                 cancelButton.disabled = !isBusy;
             };
 
-            /** 从文件或 URL 获取支持结构化克隆到 Worker 的 Blob。 */
+            /** 切换本地文件 / 远程 URL 输入面板，解析只使用当前模式。 */
+            const setSourceMode = (mode) => {
+                activeSourceMode = mode === "url" ? "url" : "file";
+                fileField.hidden = activeSourceMode !== "file";
+                urlField.hidden = activeSourceMode !== "url";
+                sourceModeButtons.forEach((button) => {
+                    const isActive = button.dataset.sourceMode === activeSourceMode;
+                    button.classList.toggle("is-active", isActive);
+                    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+                });
+            };
+
+            /** 从当前展示的来源获取支持结构化克隆到 Worker 的 Blob。 */
             const loadSource = async () => {
-                const file = fileInput.files?.[0];
-                if (file) {
+                if (activeSourceMode === "file") {
+                    const file = fileInput.files?.[0];
+                    if (!file) {
+                        throw new Error("请先选择要解析的 MP4 文件");
+                    }
                     return {
                         blob: file,
                         source: {
@@ -316,7 +356,7 @@
 
                 const rawUrl = urlInput.value.trim();
                 if (!rawUrl) {
-                    throw new Error("请上传 MP4 文件或输入可访问的视频 URL");
+                    throw new Error("请输入可访问的视频 URL");
                 }
                 const parsedUrl = new URL(rawUrl);
                 const response = await fetch(parsedUrl, { mode: "cors" });
@@ -332,7 +372,7 @@
                     source: {
                         type: "远程 URL",
                         url: parsedUrl.href,
-                            name: decodeURIComponent(parsedUrl.pathname).split("/").pop() || parsedUrl.hostname,
+                        name: decodeURIComponent(parsedUrl.pathname).split("/").pop() || parsedUrl.hostname,
                         mimeType: response.headers.get("content-type") || blob.type || "未知",
                         size: formatBytes(blob.size),
                     },
@@ -513,6 +553,12 @@
                 void startDecoding();
             });
 
+            sourceModeButtons.forEach((button) => {
+                button.addEventListener("click", () => {
+                    setSourceMode(button.dataset.sourceMode);
+                });
+            });
+
             cancelButton.addEventListener("click", () => {
                 activeRunId += 1;
                 updateParseDuration();
@@ -537,10 +583,6 @@
                 setStatus("请使用 HTTPS / localhost 下的 Chromium 浏览器", "error");
                 startButton.disabled = true;
             }
-
-            document.querySelector('.header-link[aria-disabled="true"]')?.addEventListener("click", (event) => {
-                event.preventDefault();
-            });
         </script>
     </body>
 </html>

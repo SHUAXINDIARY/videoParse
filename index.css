@@ -170,15 +170,59 @@ h2 {
 
 .controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 12px;
     align-items: end;
     padding: 24px 0;
 }
 
+.source-mode {
+    display: inline-flex;
+    gap: 0;
+    align-items: stretch;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--panel);
+}
+
+.source-mode__button {
+    min-height: 40px;
+    padding: 0 14px;
+    color: var(--muted);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.source-mode__button + .source-mode__button {
+    border-left: 1px solid var(--line);
+}
+
+.source-mode__button:hover:not(:disabled) {
+    color: var(--accent-dark);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.source-mode__button.is-active {
+    color: #fffdf8;
+    background: var(--accent);
+}
+
+.source-mode__button.is-active:hover:not(:disabled) {
+    color: #fffdf8;
+    background: var(--accent-dark);
+}
+
 .field {
     display: grid;
     gap: 7px;
+}
+
+.field[hidden] {
+    display: none;
 }
 
 .field label {
@@ -359,7 +403,12 @@ figcaption {
     }
 
     .controls {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .controls #startButton,
+    .controls #cancelButton {
+        justify-self: start;
     }
 }
 
@@ -370,6 +419,14 @@ figcaption {
 
     .controls {
         grid-template-columns: 1fr;
+    }
+
+    .source-mode {
+        width: 100%;
+    }
+
+    .source-mode__button {
+        flex: 1;
     }
 
     .hint {
