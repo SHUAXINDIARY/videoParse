@@ -104,6 +104,55 @@ h2 {
     line-height: 1.6;
 }
 
+.header-actions {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.header-links {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.header-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 0 14px;
+    color: var(--ink);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: transparent;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.header-link:hover {
+    border-color: var(--accent);
+    color: var(--accent-dark);
+}
+
+.header-link:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    outline-offset: 2px;
+}
+
+.header-link[aria-disabled="true"] {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.header-link[aria-disabled="true"]:hover {
+    border-color: var(--line);
+    color: var(--ink);
+}
+
 .runtime-badge {
     flex: none;
     padding: 8px 10px;

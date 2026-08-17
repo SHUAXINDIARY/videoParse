@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>实现原理 · videoparse</title>
+        <style>
+            :root {
+                color-scheme: light;
+                --page: #f4f1ea;
+                --panel: #fffdf8;
+                --ink: #22211e;
+                --muted: #6d6a62;
+                --line: #d9d3c7;
+                --accent: #b84625;
+                --accent-dark: #8f3219;
+                --success: #286347;
+                --code: #f0ebe1;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                min-width: 320px;
+                margin: 0;
+                color: var(--ink);
+                background: var(--page);
+                font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                line-height: 1.65;
+            }
+
+            main {
+                width: min(920px, calc(100% - 32px));
+                margin: 0 auto;
+                padding: clamp(24px, 5vw, 64px) 0 80px;
+            }
+
+            header {
+                padding-bottom: 24px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .nav {
+                margin-bottom: 16px;
+                font-size: 14px;
+            }
+
+            .nav a {
+                color: var(--accent);
+                text-decoration: none;
+            }
+
+            .nav a:hover {
+                color: var(--accent-dark);
+                text-decoration: underline;
+            }
+
+            h1,
+            h2,
+            h3 {
+                margin: 0;
+                line-height: 1.25;
+                letter-spacing: -0.02em;
+            }
+
+            h1 {
+                font-size: clamp(28px, 5vw, 40px);
+            }
+
+            h1 span {
+                color: var(--accent);
+            }
+
+            h2 {
+                margin: 40px 0 14px;
+                font-size: 22px;
+            }
+
+            h3 {
+                margin: 24px 0 10px;
+                font-size: 17px;
+            }
+
+            .intro,
+            p,
+            li {
+                color: var(--ink);
+            }
+
+            .intro {
+                margin-top: 12px;
+                color: var(--muted);
+                font-size: 16px;
+            }
+
+            p {
+                margin: 0 0 14px;
+            }
+
+            ul,
+            ol {
+                margin: 0 0 16px;
+                padding-left: 1.35em;
+            }
+
+            li + li {
+                margin-top: 6px;
+            }
+
+            code,
+            .mono {
+                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-size: 0.92em;
+            }
+
+            code {
+                padding: 0.1em 0.35em;
+                border-radius: 3px;
+                background: var(--code);
+            }
+
+            .panel {
+                margin: 18px 0 24px;
+                padding: 16px 18px;
+                overflow: auto;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                background: var(--panel);
+            }
+
+            .panel-title {
+                margin: 0 0 12px;
+                color: var(--muted);
+                font-size: 12px;
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+            }
+
+            .mermaid {
+                display: flex;
+                justify-content: center;
+                margin: 0;
+            }
+
+            .mermaid svg {
+                max-width: 100%;
+                height: auto;
+            }
+
+            table {
+                width: 100%;
+                margin: 0 0 16px;
+                border-collapse: collapse;
+                font-size: 14px;
+            }
+
+            th,
+            td {
+                padding: 10px 12px;
+                text-align: left;
+                vertical-align: top;
+                border: 1px solid var(--line);
+            }
+
+            th {
+                background: var(--code);
+                font-weight: 600;
+            }
+
+            .callout {
+                margin: 16px 0;
+                padding: 12px 14px;
+                border-left: 3px solid var(--accent);
+                background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+                font-size: 14px;
+            }
+
+            .callout strong {
+                color: var(--accent-dark);
+            }
+
+            footer {
+                margin-top: 48px;
+                padding-top: 16px;
+                border-top: 1px solid var(--line);
+                color: var(--muted);
+                font-size: 13px;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <header>
+                <p class="nav"><a href="./index.html">← 返回 Demo</a> · <a href="./README.md">README.md</a></p>
+                <h1>实现原理 · <span>videoparse</span></h1>
+                <p class="intro">
+                    本文说明当前 Demo 如何把 MP4「拆开 → 解码 → 展示」：主线程负责交互与渲染，Web Worker
+                    内用 mp4box 解封装、WebCodecs 解码，并通过 Transferable <code>ImageBitmap</code> 回传帧画面。
+                </p>
+            </header>
+
+            <section>
+                <h2>1. 为什么这样拆</h2>
+                <p>
+                    全帧解码是 CPU / 内存密集操作。若全部放在主线程，页面滚动、按钮响应都会被卡住。因此本项目把
+                    <strong>解封装 + 解码</strong>放进 Module Worker，主线程只做：
+                </p>
+                <ul>
+                    <li>读取本地文件或 CORS 拉取远程 MP4，得到可结构化克隆的 <code>Blob</code></li>
+                    <li>用 <code>&lt;video&gt;</code> 展示预览与浏览器侧元数据</li>
+                    <li>接收 Worker 消息：进度、容器信息、逐帧 bitmap、完成 / 错误</li>
+                    <li>把 bitmap 画到 Canvas 再导出 PNG 缩略图，并维护帧数与耗时</li>
+                </ul>
+                <div class="callout">
+                    <strong>安全上下文：</strong>Worker 以 <code>type: "module"</code> 加载
+                    <code>worker.js</code>，并从 CDN ESM 引入 mp4box；页面必须通过
+                    <code>localhost</code> 或 HTTPS 访问。
+                </div>
+            </section>
+
+            <section>
+                <h2>2. 总体架构</h2>
+                <p>
+                    一次解析任务对应一个独立的 Module Worker 实例。停止或结束时主线程会
+                    <code>postMessage({ type: "cancel" })</code> 并 <code>terminate()</code>，避免残留解码占用内存。
+                </p>
+                <div class="panel">
+                    <p class="panel-title">组件关系</p>
+                    <pre class="mermaid">
+flowchart LR
+    subgraph Main["主线程 · index.html"]
+        UI["控件 / 状态 / 耗时"]
+        Preview["&lt;video&gt; 预览"]
+        Frames["帧缩略图网格"]
+        Queue["frameQueue 串行渲染"]
+    end
+
+    subgraph Worker["Module Worker · worker.js"]
+        Feed["分片喂入 Blob"]
+        MP4["mp4box 解封装"]
+        Pump["pendingSamples 队列"]
+        VD["VideoDecoder"]
+        BM["createImageBitmap"]
+    end
+
+    CDN["mp4box@2.3.0 CDN ESM"] --> Worker
+    UI -->|start + Blob| Feed
+    Feed --> MP4
+    MP4 -->|Encoded samples| Pump
+    Pump --> VD
+    VD -->|VideoFrame| BM
+    BM -->|frame + Transferable| Queue
+    Queue --> Frames
+    MP4 -->|mp4-metadata / progress| UI
+    VD -.->|done / error| UI
+                    </pre>
+                </div>
+            </section>
+
+            <section>
+                <h2>3. 端到端时序</h2>
+                <p>从点击「解析全部帧」到展示缩略图，大致经过以下阶段：</p>
+                <div class="panel">
+                    <p class="panel-title">时序概览</p>
+                    <pre class="mermaid">
+sequenceDiagram
+    actor User as 用户
+    participant Main as 主线程
+    participant W as worker.js
+    participant M as mp4box
+    participant D as VideoDecoder
+
+    User->>Main: 选择文件 / URL 并开始
+    Main->>Main: loadSource → Blob<br/>loadPreviewMetadata
+    Main->>W: start + Blob
+    W->>M: 按 2MB 分片 appendBuffer
+    M-->>W: onReady(info)
+    W->>D: configure(codec, description…)
+    W-->>Main: mp4-metadata
+    M-->>W: onSamples(samples)
+    loop 背压泵送
+        W->>D: decode(EncodedVideoChunk)
+        D-->>W: output(VideoFrame)
+        W->>W: createImageBitmap
+        W-->>Main: frame + ImageBitmap
+        Main->>Main: Canvas → PNG → DOM
+    end
+    W->>D: flush
+    W-->>Main: done
+                    </pre>
+                </div>
+            </section>
+
+            <section>
+                <h2>4. Worker 内部流水线</h2>
+
+                <h3>4.1 分片喂入容器</h3>
+                <p>
+                    Worker 不会一次性把整个文件读进 ArrayBuffer。它按 <code>CHUNK_SIZE = 2MB</code> 对
+                    <code>Blob</code> 切片，每次 <code>arrayBuffer()</code> 后写入
+                    <code>buffer.fileStart = offset</code>，再交给 <code>mp4File.appendBuffer</code>。
+                    偏移必须正确，mp4box 才能把离散块拼回完整 ISO BMFF 结构。
+                </p>
+
+                <h3>4.2 选轨与配置解码器</h3>
+                <p>
+                    <code>onReady</code> 时在 <code>info.tracks</code> 中找第一条带
+                    <code>video</code> 的轨道，提取 codec / 宽高，并从 sample entry 写出
+                    AVC/HVC 等初始化数据作为 WebCodecs 的 <code>description</code>，然后
+                    <code>VideoDecoder.configure</code>。
+                </p>
+
+                <h3>4.3 样本提取与解码背压</h3>
+                <p>
+                    mp4box 按批（<code>EXTRACTION_BATCH_SIZE = 24</code>）回调
+                    <code>onSamples</code>，样本先进入 <code>pendingSamples</code>。
+                    <code>pumpDecodeQueue</code> 仅在 <code>decodeQueueSize &lt; 8</code> 时继续
+                    <code>decode</code>，避免把编码器队列撑爆。解码输出后先
+                    <code>createImageBitmap(frame)</code>，再以 Transferable 发出
+                    <code>frame</code> 消息，并立刻 <code>frame.close()</code>。
+                </p>
+
+                <div class="panel">
+                    <p class="panel-title">Worker 数据变换</p>
+                    <pre class="mermaid">
+flowchart TB
+    Blob["source Blob"] --> Slice["slice(offset, offset+2MB)"]
+    Slice --> Append["appendBuffer + fileStart"]
+    Append --> Ready{"onReady?"}
+    Ready -->|是| Track["选视频轨 + description"]
+    Track --> Config["VideoDecoder.configure"]
+    Ready --> Samples["onSamples → pendingSamples"]
+    Config --> Pump["pumpDecodeQueue"]
+    Samples --> Pump
+    Pump --> Chunk["EncodedVideoChunk<br/>key / delta"]
+    Chunk --> Decode["videoDecoder.decode"]
+    Decode --> VF["VideoFrame"]
+    VF --> IBM["ImageBitmap"]
+    IBM --> Post["postMessage frame<br/>transfer bitmap"]
+                    </pre>
+                </div>
+
+                <h3>4.4 moov 在文件尾部时的二次喂入</h3>
+                <p>
+                    不少 MP4 把 <code>moov</code> 放在文件末尾。首轮从偏移 0 读完并
+                    <code>flush</code> 后，可能已经 <code>onReady</code>，但还没有真正抽出媒体样本。
+                    此时用 <code>mp4File.seek(0, true)</code> 得到建议的媒体数据起始偏移，再从该偏移
+                    <code>feedBlob</code> 一次，才能继续 <code>onSamples</code>。
+                </p>
+                <div class="callout">
+                    <strong>完成条件：</strong><code>maybeFinish</code> 要求输入喂完、样本队列为空、解码队列为空，再
+                    <code>flush</code> 解码器，最后发送 <code>done</code>。
+                </div>
+            </section>
+
+            <section>
+                <h2>5. 主线程与消息协议</h2>
+                <p>双方通过结构化消息通信，方向与语义如下：</p>
+                <div class="panel" style="padding: 0; overflow: hidden">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>方向</th>
+                                <th>type</th>
+                                <th>作用</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>主 → Worker</td>
+                                <td><code>start</code></td>
+                                <td>携带 MP4 <code>Blob</code>，启动解封装与解码</td>
+                            </tr>
+                            <tr>
+                                <td>主 → Worker</td>
+                                <td><code>cancel</code></td>
+                                <td>置取消标志，清空样本队列，关闭解码器</td>
+                            </tr>
+                            <tr>
+                                <td>Worker → 主</td>
+                                <td><code>input-progress</code></td>
+                                <td>容器字节读取进度</td>
+                            </tr>
+                            <tr>
+                                <td>Worker → 主</td>
+                                <td><code>progress</code></td>
+                                <td>阶段文案 + 已解码帧数</td>
+                            </tr>
+                            <tr>
+                                <td>Worker → 主</td>
+                                <td><code>mp4-metadata</code></td>
+                                <td>mp4box info、选中轨道、decoderConfig</td>
+                            </tr>
+                            <tr>
+                                <td>Worker → 主</td>
+                                <td><code>frame</code></td>
+                                <td><code>index</code> / <code>timestampMs</code> / Transferable <code>bitmap</code></td>
+                            </tr>
+                            <tr>
+                                <td>Worker → 主</td>
+                                <td><code>done</code> / <code>error</code></td>
+                                <td>正常结束或失败</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3>5.1 帧展示保序</h3>
+                <p>
+                    Worker 可能较快连续投递多帧。主线程用 <code>frameQueue = frameQueue.then(() =&gt;
+                    appendFrame(...))</code> 把 PNG 编码与 DOM 插入串起来，保证缩略图按到达顺序稳定追加，并在
+                    <code>done</code> / <code>error</code> 前 <code>await frameQueue</code>，避免「状态已完成但图还没画完」。
+                </p>
+
+                <h3>5.2 任务世代号</h3>
+                <p>
+                    <code>activeRunId</code> 在每次开始或停止时递增。过期任务的回调若仍带着旧
+                    <code>runId</code>，会丢弃消息并 <code>close()</code> 残留 bitmap，防止旧 Worker 污染新一轮结果。
+                </p>
+            </section>
+
+            <section>
+                <h2>6. 关键设计点小结</h2>
+                <div class="panel">
+                    <p class="panel-title">设计对照</p>
+                    <pre class="mermaid">
+mindmap
+  root((videoparse))
+    隔离
+      Module Worker
+      主线程只渲染
+    吞吐
+      2MB 分片喂入
+      decodeQueue 背压
+      批提取 samples
+    零拷贝倾向
+      ImageBitmap Transferable
+      及时 close VideoFrame
+    容器兼容
+      moov 尾部二次 feed
+      fileStart 偏移
+    UI 正确性
+      frameQueue 保序
+      activeRunId 防串扰
+                    </pre>
+                </div>
+                <ol>
+                    <li><strong>解耦：</strong>重计算在 Worker，UI 保持可响应。</li>
+                    <li><strong>背压：</strong>限制 WebCodecs 队列深度，样本与解码速度匹配。</li>
+                    <li><strong>转移所有权：</strong>bitmap 用 Transferable 传到主线程，减少像素拷贝。</li>
+                    <li><strong>容器边角：</strong>显式处理「moov 在尾部」导致的首轮无样本问题。</li>
+                    <li><strong>可取消：</strong>cancel + terminate + runId，保证停止后无幽灵更新。</li>
+                </ol>
+            </section>
+
+            <section>
+                <h2>7. 文件职责</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>文件</th>
+                            <th>职责</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>index.html</code></td>
+                            <td>页面结构、主线程模块脚本、Worker 生命周期与帧渲染</td>
+                        </tr>
+                        <tr>
+                            <td><code>index.css</code></td>
+                            <td>Demo 视觉样式</td>
+                        </tr>
+                        <tr>
+                            <td><code>worker.js</code></td>
+                            <td>mp4box 解封装、WebCodecs 解码、消息上报</td>
+                        </tr>
+                        <tr>
+                            <td><code>README.md</code></td>
+                            <td>仓库基本信息与启动方式</td>
+                        </tr>
+                        <tr>
+                            <td><code>README.html</code></td>
+                            <td>本页：实现原理与架构说明</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <footer>
+                架构图由 Mermaid 在浏览器中渲染。若图未显示，请确认可访问 CDN，或使用支持 Mermaid 的预览环境打开本页。
+            </footer>
+        </main>
+
+        <script type="module">
+            import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+            mermaid.initialize({
+                startOnLoad: true,
+                theme: "base",
+                securityLevel: "strict",
+                themeVariables: {
+                    primaryColor: "#fffdf8",
+                    primaryTextColor: "#22211e",
+                    primaryBorderColor: "#d9d3c7",
+                    lineColor: "#6d6a62",
+                    secondaryColor: "#f0ebe1",
+                    tertiaryColor: "#f4f1ea",
+                    fontFamily: "ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+                },
+                flowchart: {
+                    curve: "basis",
+                    padding: 12,
+                },
+                sequence: {
+                    actorMargin: 28,
+                    messageMargin: 36,
+                },
+            });
+        </script>
+    </body>
+</html>
