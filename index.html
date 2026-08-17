@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>WebCodecs MP4 全帧解析 Demo</title>
+        <link rel="stylesheet" href="index.css">
+     
+    </head>
+    <body>
+        <main>
+            <header>
+                <div>
+                    <h1>MP4 <span>全帧</span>解析</h1>
+                    <p class="intro">
+                        Web Worker 中使用 mp4box 解封装，WebCodecs 解码，并将每一帧以 ImageBitmap 传回主线程展示。
+                    </p>
+                </div>
+                <span id="runtimeBadge" class="runtime-badge" aria-live="polite">检查运行环境中…</span>
+            </header>
+
+            <section class="controls" aria-label="视频来源">
+                <div class="field">
+                    <label for="fileInput">上传 MP4 文件</label>
+                    <input id="fileInput" type="file" accept="video/mp4,.mp4" />
+                </div>
+                <div class="field">
+                    <label for="urlInput">或粘贴 MP4 URL</label>
+                    <input id="urlInput" type="url" placeholder="https://example.com/video.mp4" />
+                </div>
+                <button id="startButton" type="button">解析全部帧</button>
+                <button id="cancelButton" class="secondary" type="button" disabled>停止</button>
+                <p class="hint">
+                    选择本地视频或粘贴https/http协议的视频地址，仅支持 WebCodecs 的 Chromium 浏览器，以及可被 CORS 读取的 MP4 URL。长视频的全部帧会占用大量内存。
+                </p>
+            </section>
+
+            <section class="layout">
+                <div class="panel">
+                    <div class="panel-heading">
+                        <h2>视频与元数据</h2>
+                        <span id="status" class="status" data-status="idle" aria-live="polite">等待输入</span>
+                    </div>
+                    <video id="preview" controls preload="metadata"></video>
+                    <!-- 基本视频信息卡片：文件来源、容器与视频轨道关键参数 -->
+                    <dl id="basicVideoInfo" class="basic-video-info" aria-label="视频基本信息">
+                        <div class="basic-video-info__item">
+                            <dt>文件名</dt>
+                            <dd data-basic-video-info="fileName">—</dd>
+                        </div>
+                        <div class="basic-video-info__item">
+                            <dt>视频格式</dt>
+                            <dd data-basic-video-info="format">—</dd>
+                        </div>
+                        <div class="basic-video-info__item">
+                            <dt>编码类型</dt>
+                            <dd data-basic-video-info="codec">—</dd>
+                        </div>
+                        <div class="basic-video-info__item">
+                            <dt>帧率</dt>
+                            <dd data-basic-video-info="frameRate">—</dd>
+                        </div>
+                        <div class="basic-video-info__item">
+                            <dt>分辨率</dt>
+                            <dd data-basic-video-info="resolution">—</dd>
+                        </div>
+                        <div class="basic-video-info__item">
+                            <dt>宽高尺寸</dt>
+                            <dd data-basic-video-info="dimensions">—</dd>
+                        </div>
+                    </dl>
+                    <pre id="metadata">{ "状态": "选择 MP4 文件或输入 URL 后开始解析" }</pre>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-heading">
+                        <h2>已解码帧</h2>
+                        <div class="frame-meta">
+                            <span id="frameCounter" class="frame-counter">0 帧</span>
+                            <span id="parseDuration" class="parse-duration">耗时 —</span>
+                        </div>
+                    </div>
+                    <div id="frames" class="frames" aria-live="polite">
+                        <p class="empty">解析后将在这里按时间戳展示每一帧。</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <script type="module">
+            /**
+             * Worker（worker.js）通过 ESM 加载 mp4box，因此 HTML 必须由 localhost / HTTPS 提供服务。
+             */
+            /** 将 ImageBitmap 转换为 PNG 的 MIME 类型 */
+            const FRAME_IMAGE_MIME_TYPE = "image/png";
+            /** 毫秒转秒的换算值 */
+            const MILLISECONDS_PER_SECOND = 1000;
+            /** 不可用信息的统一占位符 */
+            const UNKNOWN_VIDEO_INFO_TEXT = "未知";
+            /** 帧率小数精度 */
+            const FRAME_RATE_DECIMAL_DIGITS = 3;
+
+            const fileInput = document.querySelector("#fileInput");
+            const urlInput = document.querySelector("#urlInput");
+            const startButton = document.querySelector("#startButton");
+            const cancelButton = document.querySelector("#cancelButton");
+            const preview = document.querySelector("#preview");
+            const status = document.querySelector("#status");
+            const metadata = document.querySelector("#metadata");
+            const frames = document.querySelector("#frames");
+            const frameCounter = document.querySelector("#frameCounter");
+            const parseDuration = document.querySelector("#parseDuration");
+            const runtimeBadge = document.querySelector("#runtimeBadge");
+            const basicVideoInfo = document.querySelector("#basicVideoInfo");
+
+            let activeWorker = null;
+            let previewObjectUrl = null;
+            let frameObjectUrls = [];
+            let activeRunId = 0;
+            let appendedFrameCount = 0;
+            let frameQueue = Promise.resolve();
+            /** 当前解析任务的 performance.now() 起点；未开始时为 null。 */
+            let parseStartedAt = null;
+
+            /** 更新运行状态文本。 */
+            const setStatus = (text, statusType = "idle") => {
+                status.textContent = text;
+                status.dataset.status = statusType;
+            };
+
+            /** 当前环境是否具备策略一的最低运行条件。 */
+            const isWebCodecsSupported = () => {
+                return window.isSecureContext && "Worker" in window && "VideoDecoder" in window;
+            };
+
+            /** 格式化以便显示的文件大小。 */
+            const formatBytes = (bytes) => {
+                if (!Number.isFinite(bytes)) {
+                    return "未知";
+                }
+                const units = ["B", "KB", "MB", "GB"];
+                const unitIndex = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
+                return `${(bytes / 1024 ** unitIndex).toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
+            };
+
+            /** 将秒值安全格式化为可读字符串。 */
+            const formatSeconds = (seconds) => {
+                return Number.isFinite(seconds) ? `${seconds.toFixed(3)} 秒` : "未知";
+            };
+
+            /** 将已流逝的毫秒格式化为「耗时 x.xxx 秒」。 */
+            const formatParseDuration = (elapsedMs) => {
+                if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+                    return "耗时 —";
+                }
+                return `耗时 ${(elapsedMs / MILLISECONDS_PER_SECOND).toFixed(3)} 秒`;
+            };
+
+            /** 根据当前起点刷新解析耗时展示；无起点时显示占位。 */
+            const updateParseDuration = () => {
+                if (parseStartedAt === null) {
+                    parseDuration.textContent = "耗时 —";
+                    return;
+                }
+                parseDuration.textContent = formatParseDuration(performance.now() - parseStartedAt);
+            };
+
+            /** 读取 HTMLVideoElement 可直接获得的元数据。 */
+            const getBrowserMetadata = () => {
+                const quality = typeof preview.getVideoPlaybackQuality === "function" ? preview.getVideoPlaybackQuality() : null;
+                return {
+                    duration: formatSeconds(preview.duration),
+                    dimensions: `${preview.videoWidth} × ${preview.videoHeight}`,
+                    currentSrc: preview.currentSrc || "未知",
+                    networkState: preview.networkState,
+                    readyState: preview.readyState,
+                    playbackQuality: quality
+                        ? {
+                              totalVideoFrames: quality.totalVideoFrames,
+                              droppedVideoFrames: quality.droppedVideoFrames,
+                              corruptedVideoFrames: quality.corruptedVideoFrames,
+                          }
+                        : "浏览器未提供 getVideoPlaybackQuality",
+                };
+            };
+
+            /** 将当前汇总元数据打印到页面。 */
+            const renderMetadata = (data) => {
+                metadata.textContent = JSON.stringify(data, null, 2);
+                renderBasicVideoInfo(data);
+            };
+
+            /** 获取本地文件或 URL 对应的展示文件名。 */
+            const getSourceFileName = (source) => {
+                if (source?.name) {
+                    return source.name;
+                }
+                if (!source?.url) {
+                    return UNKNOWN_VIDEO_INFO_TEXT;
+                }
+                try {
+                    const url = new URL(source.url);
+                    const pathname = decodeURIComponent(url.pathname);
+                    return pathname.split("/").pop() || url.hostname;
+                } catch (_error) {
+                    return source.url;
+                }
+            };
+
+            /** 从文件名或 URL 中解析视频格式扩展名。 */
+            const getSourceFormat = (source) => {
+                const fileName = getSourceFileName(source);
+                const extension = fileName.split(".").pop()?.toUpperCase();
+                const mimeType = source?.mimeType || UNKNOWN_VIDEO_INFO_TEXT;
+                if (!extension || extension === fileName.toUpperCase()) {
+                    return mimeType;
+                }
+                return `${extension} · ${mimeType}`;
+            };
+
+            /** 根据 MP4 轨道样本数量与时长计算平均帧率。 */
+            const getTrackFrameRate = (track) => {
+                const duration = Number(track?.duration);
+                const timescale = Number(track?.timescale);
+                const frameCount = Number(track?.nb_samples);
+                if (
+                    !Number.isFinite(duration) ||
+                    !Number.isFinite(timescale) ||
+                    !Number.isFinite(frameCount) ||
+                    duration <= 0 ||
+                    timescale <= 0 ||
+                    frameCount <= 0
+                ) {
+                    return UNKNOWN_VIDEO_INFO_TEXT;
+                }
+                const frameRate = (frameCount * timescale) / duration;
+                return `${frameRate.toFixed(FRAME_RATE_DECIMAL_DIGITS)} fps（平均）`;
+            };
+
+            /** 渲染视频预览与 MP4 轨道解析后的基础信息卡片。 */
+            const renderBasicVideoInfo = (data) => {
+                const track = data?.mp4box?.selectedVideoTrack;
+                const width = Number(track?.video?.width ?? track?.track_width ?? preview.videoWidth);
+                const height = Number(track?.video?.height ?? track?.track_height ?? preview.videoHeight);
+                const isVideoSizeAvailable =
+                    Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+                const resolution = isVideoSizeAvailable ? `${width} × ${height}` : UNKNOWN_VIDEO_INFO_TEXT;
+                const basicInfo = {
+                    fileName: getSourceFileName(data?.source),
+                    format: getSourceFormat(data?.source),
+                    codec: track?.codec || UNKNOWN_VIDEO_INFO_TEXT,
+                    frameRate: getTrackFrameRate(track),
+                    resolution,
+                    dimensions: isVideoSizeAvailable ? `宽 ${width}px · 高 ${height}px` : UNKNOWN_VIDEO_INFO_TEXT,
+                };
+                Object.entries(basicInfo).forEach(([key, value]) => {
+                    const field = basicVideoInfo.querySelector(`[data-basic-video-info="${key}"]`);
+                    if (field) {
+                        field.textContent = value;
+                        field.title = value;
+                    }
+                });
+            };
+
+            /** 释放旧预览与帧缩略图的 Blob URL。 */
+            const clearOutput = () => {
+                frameObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+                frameObjectUrls = [];
+                appendedFrameCount = 0;
+                frameCounter.textContent = "0 帧";
+                parseStartedAt = null;
+                updateParseDuration();
+                frameQueue = Promise.resolve();
+                frames.replaceChildren();
+                const empty = document.createElement("p");
+                empty.className = "empty";
+                empty.textContent = "正在等待 WebCodecs 输出第一帧…";
+                frames.append(empty);
+            };
+
+            /** 终止正在运行的解码 Worker。 */
+            const stopActiveWorker = () => {
+                if (activeWorker) {
+                    activeWorker.postMessage({ type: "cancel" });
+                    activeWorker.terminate();
+                    activeWorker = null;
+                }
+            };
+
+            /** 统一更新按钮状态。 */
+            const setBusy = (isBusy) => {
+                startButton.disabled = isBusy;
+                cancelButton.disabled = !isBusy;
+            };
+
+            /** 从文件或 URL 获取支持结构化克隆到 Worker 的 Blob。 */
+            const loadSource = async () => {
+                const file = fileInput.files?.[0];
+                if (file) {
+                    return {
+                        blob: file,
+                        source: {
+                            type: "本地文件",
+                            name: file.name,
+                            mimeType: file.type || "未知",
+                            size: formatBytes(file.size),
+                        },
+                    };
+                }
+
+                const rawUrl = urlInput.value.trim();
+                if (!rawUrl) {
+                    throw new Error("请上传 MP4 文件或输入可访问的视频 URL");
+                }
+                const parsedUrl = new URL(rawUrl);
+                const response = await fetch(parsedUrl, { mode: "cors" });
+                if (!response.ok) {
+                    throw new Error(`视频请求失败：HTTP ${response.status}`);
+                }
+                const blob = await response.blob();
+                if (blob.size === 0) {
+                    throw new Error("视频 URL 返回了空文件");
+                }
+                return {
+                    blob,
+                    source: {
+                        type: "远程 URL",
+                        url: parsedUrl.href,
+                            name: decodeURIComponent(parsedUrl.pathname).split("/").pop() || parsedUrl.hostname,
+                        mimeType: response.headers.get("content-type") || blob.type || "未知",
+                        size: formatBytes(blob.size),
+                    },
+                };
+            };
+
+            /** 为预览视频设置 Blob URL 并等待元数据加载。 */
+            const loadPreviewMetadata = async (blob) => {
+                if (previewObjectUrl) {
+                    URL.revokeObjectURL(previewObjectUrl);
+                }
+                previewObjectUrl = URL.createObjectURL(blob);
+                await new Promise((resolve, reject) => {
+                    const handleLoaded = () => {
+                        preview.removeEventListener("loadedmetadata", handleLoaded);
+                        preview.removeEventListener("error", handleError);
+                        resolve();
+                    };
+                    const handleError = () => {
+                        preview.removeEventListener("loadedmetadata", handleLoaded);
+                        preview.removeEventListener("error", handleError);
+                        reject(new Error("浏览器无法读取该视频的媒体元数据"));
+                    };
+                    preview.addEventListener("loadedmetadata", handleLoaded, { once: true });
+                    preview.addEventListener("error", handleError, { once: true });
+                    preview.src = previewObjectUrl;
+                    preview.load();
+                });
+            };
+
+            /** 将一个可转移的 ImageBitmap 添加为 PNG 帧缩略图。 */
+            const appendFrame = async ({ index, timestampMs, bitmap }) => {
+                try {
+                    const canvas = document.createElement("canvas");
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                    const context = canvas.getContext("2d");
+                    if (!context) {
+                        throw new Error("无法创建 2D Canvas 上下文");
+                    }
+                    context.drawImage(bitmap, 0, 0);
+                    const imageBlob = await new Promise((resolve) => canvas.toBlob(resolve, FRAME_IMAGE_MIME_TYPE));
+                    if (!imageBlob) {
+                        throw new Error("帧图像 PNG 编码失败");
+                    }
+
+                    const emptyState = frames.querySelector(".empty");
+                    emptyState?.remove();
+                    const imageUrl = URL.createObjectURL(imageBlob);
+                    frameObjectUrls.push(imageUrl);
+
+                    const figure = document.createElement("figure");
+                    const image = document.createElement("img");
+                    image.src = imageUrl;
+                    image.alt = `第 ${index + 1} 帧，时间戳 ${timestampMs} 毫秒`;
+                    image.loading = "lazy";
+                    const caption = document.createElement("figcaption");
+                    caption.textContent = `#${index + 1} · ${(timestampMs / MILLISECONDS_PER_SECOND).toFixed(3)}s`;
+                    figure.append(image, caption);
+                    frames.append(figure);
+
+                    appendedFrameCount += 1;
+                    frameCounter.textContent = `${appendedFrameCount} 帧`;
+                } finally {
+                    bitmap.close();
+                }
+            };
+
+            /** 创建包含解码器逻辑的独立 Module Worker。 */
+            const createDecoderWorker = () => {
+                return new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+            };
+
+            /** 处理 Worker 返回的数据并维持帧展示顺序。 */
+            const handleWorkerMessage = async (event, runId, result) => {
+                if (runId !== activeRunId) {
+                    event.data.payload?.bitmap?.close();
+                    return;
+                }
+                const { type, payload } = event.data;
+                if (type === "frame") {
+                    updateParseDuration();
+                    frameQueue = frameQueue
+                        .then(() => appendFrame(payload))
+                        .catch((error) => {
+                            if (runId !== activeRunId) {
+                                return;
+                            }
+                            const message = error instanceof Error ? error.message : String(error);
+                            updateParseDuration();
+                            setStatus(`帧渲染失败：${message}`, "error");
+                            setBusy(false);
+                            stopActiveWorker();
+                        });
+                    return;
+                }
+                if (type === "input-progress") {
+                    updateParseDuration();
+                    setStatus(`读取容器：${formatBytes(payload.loadedBytes)} / ${formatBytes(payload.totalBytes)}`, "running");
+                    return;
+                }
+                if (type === "progress") {
+                    updateParseDuration();
+                    setStatus(`${payload.phase}：已输出 ${payload.decodedFrameCount} 帧`, "running");
+                    return;
+                }
+                if (type === "mp4-metadata") {
+                    result.mp4box = payload;
+                    renderMetadata(result);
+                    return;
+                }
+                if (type === "error") {
+                    await frameQueue;
+                    updateParseDuration();
+                    setStatus(`解析失败：${payload.message}`, "error");
+                    setBusy(false);
+                    stopActiveWorker();
+                    return;
+                }
+                if (type === "done") {
+                    await frameQueue;
+                    updateParseDuration();
+                    setStatus(`解析完成：共 ${payload.decodedFrameCount} 帧`, "done");
+                    setBusy(false);
+                    stopActiveWorker();
+                }
+            };
+
+            /** 启动一次全帧解码任务。 */
+            const startDecoding = async () => {
+                if (!isWebCodecsSupported()) {
+                    setStatus("当前环境不支持 WebCodecs 策略一", "error");
+                    return;
+                }
+
+                activeRunId += 1;
+                const runId = activeRunId;
+                stopActiveWorker();
+                clearOutput();
+                setBusy(true);
+                setStatus("正在准备视频…", "running");
+
+                try {
+                    const { blob, source } = await loadSource();
+                    await loadPreviewMetadata(blob);
+                    const result = {
+                        source,
+                        browserMetadata: getBrowserMetadata(),
+                        mp4box: "等待 Worker 完成 MP4 容器解析…",
+                    };
+                    renderMetadata(result);
+
+                    activeWorker = createDecoderWorker();
+                    activeWorker.onmessage = (event) => {
+                        void handleWorkerMessage(event, runId, result);
+                    };
+                    activeWorker.onerror = (event) => {
+                        if (runId !== activeRunId) {
+                            return;
+                        }
+                        setStatus(`Worker 异常：${event.message || "无法加载解码 Worker"}`, "error");
+                        setBusy(false);
+                        stopActiveWorker();
+                    };
+                    parseStartedAt = performance.now();
+                    updateParseDuration();
+                    activeWorker.postMessage({ type: "start", file: blob });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    parseStartedAt = null;
+                    updateParseDuration();
+                    setStatus(`无法开始：${message}`, "error");
+                    setBusy(false);
+                }
+            };
+
+            startButton.addEventListener("click", () => {
+                void startDecoding();
+            });
+
+            cancelButton.addEventListener("click", () => {
+                activeRunId += 1;
+                updateParseDuration();
+                stopActiveWorker();
+                setBusy(false);
+                setStatus("已停止解析", "idle");
+            });
+
+            window.addEventListener("beforeunload", () => {
+                stopActiveWorker();
+                if (previewObjectUrl) {
+                    URL.revokeObjectURL(previewObjectUrl);
+                }
+                frameObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+            });
+
+            if (isWebCodecsSupported()) {
+                runtimeBadge.textContent = "WebCodecs 可用";
+            } else {
+                runtimeBadge.textContent = "WebCodecs 不可用";
+                runtimeBadge.classList.add("is-unsupported");
+                setStatus("请使用 HTTPS / localhost 下的 Chromium 浏览器", "error");
+                startButton.disabled = true;
+            }
+        </script>
+    </body>
+</html>
