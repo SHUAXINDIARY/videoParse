@@ -83,6 +83,12 @@
                 font-size: 17px;
             }
 
+            h4 {
+                margin: 20px 0 10px;
+                font-size: 15px;
+                font-weight: 650;
+            }
+
             .intro,
             p,
             li {
@@ -540,6 +546,374 @@ mindmap
                         </tr>
                     </tbody>
                 </table>
+            </section>
+
+            <section>
+                <h2>8. MP4Box 解析结果字段说明</h2>
+                <p>
+                    主线程元数据面板展示的是一次解析任务汇总后的结构：
+                    <code>source</code>、<code>browserMetadata</code>、以及 Worker 回传的
+                    <code>mp4box</code>（内含 <code>mp4boxInfo</code>、<code>selectedVideoTrack</code>、
+                    <code>decoderConfig</code>）。下面以一份真实样例数值说明常见字段含义。
+                </p>
+
+                <h3>8.1 顶层结构</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>字段</th>
+                            <th>含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>source</code></td>
+                            <td>源文件信息，包含文件名、MIME 类型、文件大小</td>
+                        </tr>
+                        <tr>
+                            <td><code>browserMetadata</code></td>
+                            <td>浏览器播放时的元数据，如时长、分辨率、网络/就绪状态、丢帧统计</td>
+                        </tr>
+                        <tr>
+                            <td><code>mp4box</code></td>
+                            <td>MP4Box 解析出的完整 MP4 文件内部结构信息</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>8.2 mp4boxInfo · 文件级信息</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>字段</th>
+                            <th>示例值</th>
+                            <th>含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>hasMoov</code></td>
+                            <td><code>true</code></td>
+                            <td>包含 <code>moov</code> box（元数据），可以随机访问和播放</td>
+                        </tr>
+                        <tr>
+                            <td><code>duration</code></td>
+                            <td><code>246960</code></td>
+                            <td>文件时长（以 <code>timescale</code> 为单位）</td>
+                        </tr>
+                        <tr>
+                            <td><code>timescale</code></td>
+                            <td><code>44100</code></td>
+                            <td>时间刻度 / 时间基，每秒 44100 个时间单位</td>
+                        </tr>
+                        <tr>
+                            <td><code>isFragmented</code></td>
+                            <td><code>false</code></td>
+                            <td>不是分段 MP4（fMP4）</td>
+                        </tr>
+                        <tr>
+                            <td><code>isProgressive</code></td>
+                            <td><code>false</code></td>
+                            <td>不是渐进式下载优化</td>
+                        </tr>
+                        <tr>
+                            <td><code>hasIOD</code></td>
+                            <td><code>false</code></td>
+                            <td>没有初始对象描述符（MPEG-4 系统）</td>
+                        </tr>
+                        <tr>
+                            <td><code>brands</code></td>
+                            <td><code>["qt  ", "qt  "]</code></td>
+                            <td>兼容性标识，表示 QuickTime 格式</td>
+                        </tr>
+                        <tr>
+                            <td><code>created</code> / <code>modified</code></td>
+                            <td>时间戳</td>
+                            <td>文件创建 / 修改时间（UTC）</td>
+                        </tr>
+                        <tr>
+                            <td><code>mime</code></td>
+                            <td><code>video/mp4; codecs=...</code></td>
+                            <td>MIME 类型和编解码器信息</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>8.3 tracks · 轨道信息</h3>
+
+                <h4>视频轨道（track id: 1）</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>字段</th>
+                            <th>示例值</th>
+                            <th>含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td><code>1</code></td>
+                            <td>轨道唯一 ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>type</code></td>
+                            <td><code>video</code></td>
+                            <td>轨道类型：视频</td>
+                        </tr>
+                        <tr>
+                            <td><code>codec</code></td>
+                            <td><code>avc1.640015</code></td>
+                            <td>视频编解码器（H.264/AVC，Profile High Level 5.1）</td>
+                        </tr>
+                        <tr>
+                            <td><code>timescale</code></td>
+                            <td><code>600</code></td>
+                            <td>该轨道的时间刻度，每秒 600 个时间单位</td>
+                        </tr>
+                        <tr>
+                            <td><code>duration</code></td>
+                            <td><code>3360</code></td>
+                            <td>轨道时长（以该轨道 timescale 为单位）= 3360/600 = <strong>5.6 秒</strong></td>
+                        </tr>
+                        <tr>
+                            <td><code>movie_duration</code></td>
+                            <td><code>246960</code></td>
+                            <td>电影的时长（以 <code>movie_timescale</code> 为单位）</td>
+                        </tr>
+                        <tr>
+                            <td><code>movie_timescale</code></td>
+                            <td><code>44100</code></td>
+                            <td>电影的全局时间刻度</td>
+                        </tr>
+                        <tr>
+                            <td><code>nb_samples</code></td>
+                            <td><code>168</code></td>
+                            <td>该轨道包含的样本（帧）总数 = <strong>168 帧</strong></td>
+                        </tr>
+                        <tr>
+                            <td><code>samples_duration</code></td>
+                            <td><code>3360</code></td>
+                            <td>所有样本累计时长 = 3360 个时间单位</td>
+                        </tr>
+                        <tr>
+                            <td><code>size</code></td>
+                            <td><code>344188</code></td>
+                            <td>该轨道数据总大小（字节）≈ 336 KB</td>
+                        </tr>
+                        <tr>
+                            <td><code>bitrate</code></td>
+                            <td><code>491697</code></td>
+                            <td>码率 ≈ 491.7 kbps</td>
+                        </tr>
+                        <tr>
+                            <td><code>track_width</code> / <code>track_height</code></td>
+                            <td><code>458 × 280</code></td>
+                            <td>轨道像素尺寸</td>
+                        </tr>
+                        <tr>
+                            <td><code>video.width</code> / <code>video.height</code></td>
+                            <td><code>458 × 280</code></td>
+                            <td>视频实际分辨率</td>
+                        </tr>
+                        <tr>
+                            <td><code>edits</code></td>
+                            <td>数组</td>
+                            <td>编辑列表，定义该轨道在影片中的播放映射</td>
+                        </tr>
+                        <tr>
+                            <td><code>volume</code></td>
+                            <td><code>0</code></td>
+                            <td>音量（0 = 视频轨道无音频）</td>
+                        </tr>
+                        <tr>
+                            <td><code>layer</code></td>
+                            <td><code>0</code></td>
+                            <td>图层编号（用于合成）</td>
+                        </tr>
+                        <tr>
+                            <td><code>alternate_group</code></td>
+                            <td><code>0</code></td>
+                            <td>备用组 ID（0 = 无备用）</td>
+                        </tr>
+                        <tr>
+                            <td><code>language</code></td>
+                            <td><code>und</code></td>
+                            <td>语言代码（und = 未定义）</td>
+                        </tr>
+                        <tr>
+                            <td><code>matrix</code></td>
+                            <td><code>Int32Array(36)</code></td>
+                            <td>3×3 变换矩阵（用于视频旋转 / 缩放 / 裁剪）</td>
+                        </tr>
+                        <tr>
+                            <td><code>references</code></td>
+                            <td><code>[]</code></td>
+                            <td>轨道依赖引用（空 = 无依赖）</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="callout">
+                    <strong>帧率计算：</strong>
+                    <code>nb_samples / (duration / timescale) = 168 / (3360/600) = 168 / 5.6 = <strong>30 fps</strong></code>。
+                    这也是 Demo 基本信息卡片里「平均帧率」的来源口径。
+                </div>
+
+                <h4>音频轨道（track id: 2）</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>字段</th>
+                            <th>示例值</th>
+                            <th>含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td><code>2</code></td>
+                            <td>轨道唯一 ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>type</code></td>
+                            <td><code>audio</code></td>
+                            <td>轨道类型：音频</td>
+                        </tr>
+                        <tr>
+                            <td><code>codec</code></td>
+                            <td><code>mp4a</code></td>
+                            <td>音频编解码器（AAC）</td>
+                        </tr>
+                        <tr>
+                            <td><code>timescale</code></td>
+                            <td><code>44100</code></td>
+                            <td>采样率 = 44.1 kHz（音频轨常直接以采样率为刻度）</td>
+                        </tr>
+                        <tr>
+                            <td><code>duration</code></td>
+                            <td><code>247808</code></td>
+                            <td>轨道时长 ≈ 5.62 秒（247808/44100）</td>
+                        </tr>
+                        <tr>
+                            <td><code>movie_duration</code></td>
+                            <td><code>244736</code></td>
+                            <td>电影时长（有编辑偏移时可能不同）</td>
+                        </tr>
+                        <tr>
+                            <td><code>nb_samples</code></td>
+                            <td><code>242</code></td>
+                            <td>该轨道包含的音频样本（帧）总数 = <strong>242 帧</strong></td>
+                        </tr>
+                        <tr>
+                            <td><code>samples_duration</code></td>
+                            <td><code>247808</code></td>
+                            <td>所有样本累计时长</td>
+                        </tr>
+                        <tr>
+                            <td><code>size</code></td>
+                            <td><code>68661</code></td>
+                            <td>音频数据总大小 ≈ 67 KB</td>
+                        </tr>
+                        <tr>
+                            <td><code>bitrate</code></td>
+                            <td><code>97751</code></td>
+                            <td>码率 ≈ 97.8 kbps</td>
+                        </tr>
+                        <tr>
+                            <td><code>audio.sample_rate</code></td>
+                            <td><code>44100</code></td>
+                            <td>音频采样率 44.1 kHz</td>
+                        </tr>
+                        <tr>
+                            <td><code>audio.channel_count</code></td>
+                            <td><code>2</code></td>
+                            <td>双声道（立体声）</td>
+                        </tr>
+                        <tr>
+                            <td><code>audio.sample_size</code></td>
+                            <td><code>16</code></td>
+                            <td>每个采样点 16 位深度</td>
+                        </tr>
+                        <tr>
+                            <td><code>volume</code></td>
+                            <td><code>1</code></td>
+                            <td>音量（1 = 满音量）</td>
+                        </tr>
+                        <tr>
+                            <td><code>edits.media_time</code></td>
+                            <td><code>2112</code></td>
+                            <td>音频从 2112/44100 ≈ 0.048 秒处开始（起始偏移）</td>
+                        </tr>
+                        <tr>
+                            <td><code>edits.segment_duration</code></td>
+                            <td><code>244736</code></td>
+                            <td>编辑段时长（播放时取用）</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>8.4 关键差异对比</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>对比项</th>
+                            <th>视频轨道</th>
+                            <th>音频轨道</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>nb_samples</code></td>
+                            <td><strong>168 帧</strong></td>
+                            <td><strong>242 帧</strong>（AAC 帧数）</td>
+                        </tr>
+                        <tr>
+                            <td>时长</td>
+                            <td>5.6 秒（3360/600）</td>
+                            <td>≈ 5.62 秒（247808/44100）</td>
+                        </tr>
+                        <tr>
+                            <td><code>timescale</code></td>
+                            <td>600（时间刻度）</td>
+                            <td>44100（采样率作为刻度）</td>
+                        </tr>
+                        <tr>
+                            <td>每样本代表</td>
+                            <td>1 帧画面</td>
+                            <td>1 个 AAC 音频帧（约 1024 个 PCM 采样点）</td>
+                        </tr>
+                        <tr>
+                            <td><code>nb_samples</code> 计算</td>
+                            <td>30 fps × 5.6s = 168</td>
+                            <td>编码器输出的 AAC 帧数</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>8.5 <code>nb_samples</code> 字段总结</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>轨道类型</th>
+                            <th><code>nb_samples</code> 含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>视频轨</strong></td>
+                            <td><strong>视频总帧数</strong> ≈ 帧率 × 时长</td>
+                        </tr>
+                        <tr>
+                            <td><strong>音频轨</strong></td>
+                            <td><strong>音频压缩帧总数</strong>（非 PCM 采样点数），AAC 等编码器输出的帧数</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="callout">
+                    <strong>注意大小写：</strong>解析结果里的 <code>nb_samples</code> 是轨道样本总数；
+                    Worker 调用 <code>setExtractionOptions</code> 时还有参数 <code>nbSamples</code>，
+                    用于控制提取时的批次大小（本项目为 <code>EXTRACTION_BATCH_SIZE = 24</code>），二者含义不同。
+                </div>
             </section>
 
             <footer>
