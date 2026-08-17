@@ -420,6 +420,58 @@ flowchart TB
                     <code>activeRunId</code> 在每次开始或停止时递增。过期任务的回调若仍带着旧
                     <code>runId</code>，会丢弃消息并 <code>close()</code> 残留 bitmap，防止旧 Worker 污染新一轮结果。
                 </p>
+
+                <h3>5.3 基本信息里的帧率怎么算</h3>
+                <p>
+                    页面「帧率」不是浏览器 <code>&lt;video&gt;</code> 直接给出的，也不是逐帧测速得到的。
+                    Worker 解析出视频轨后，通过 <code>mp4-metadata</code> 把
+                    <code>selectedVideoTrack</code> 传回主线程；主线程的
+                    <code>getTrackFrameRate(track)</code> 用 mp4box 轨道字段做<strong>平均帧率</strong>估算。
+                </p>
+                <p>用到的三个字段：</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>字段</th>
+                            <th>含义</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>track.nb_samples</code></td>
+                            <td>该视频轨的样本数，近似等于总帧数</td>
+                        </tr>
+                        <tr>
+                            <td><code>track.duration</code></td>
+                            <td>以 <code>timescale</code> 为单位的轨道时长（非整秒）</td>
+                        </tr>
+                        <tr>
+                            <td><code>track.timescale</code></td>
+                            <td>时间基，表示每秒对应多少个 duration 刻度</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p>换算关系：</p>
+                <ul>
+                    <li>真实时长（秒）= <code>duration / timescale</code></li>
+                    <li>平均帧率（fps）= <code>nb_samples / 真实时长</code> = <code>(nb_samples × timescale) / duration</code></li>
+                </ul>
+                <div class="panel">
+                    <p class="panel-title">帧率推导</p>
+                    <pre class="mermaid">
+flowchart LR
+    Meta["mp4-metadata<br/>selectedVideoTrack"] --> Fields["nb_samples<br/>duration<br/>timescale"]
+    Fields --> Check{"三者均有限<br/>且 &gt; 0？"}
+    Check -->|否| Unknown["显示「未知」"]
+    Check -->|是| Formula["fps = nb_samples × timescale / duration"]
+    Formula --> Display["toFixed(3) +「fps（平均）」"]
+                    </pre>
+                </div>
+                <div class="callout">
+                    <strong>为何标注「平均」：</strong>这是「总样本数 ÷ 轨道时长」的均值，不是媒体头里的固定
+                    <code>fps</code> 字段，也无法反映 VFR（可变帧率）视频中每一段的瞬时帧率。任一字段缺失或
+                    ≤ 0 时，界面显示「未知」。展示精度为 3 位小数（<code>FRAME_RATE_DECIMAL_DIGITS</code>）。
+                </div>
             </section>
 
             <section>
